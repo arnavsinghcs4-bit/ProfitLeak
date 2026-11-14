@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+profitleak.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data files
+data/*.csv
+data/*.xlsx
+data/*.parquet
+
+# Outputs
+outputs/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Node
+node_modules/
+*.npm
+
+# Frontend build
+frontend/dist/
+frontend/build/

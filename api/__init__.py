@@ -1,0 +1,1 @@
+"""ProfitLeak FastAPI adapter over the profitleak analytics package."""

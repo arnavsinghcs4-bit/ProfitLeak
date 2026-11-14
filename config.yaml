@@ -1,0 +1,62 @@
+columns:
+  order_id: Order ID
+  order_date: Order Date
+  ship_date: Ship Date
+  segment: Segment
+  region: Region
+  category: Category
+  sub_category: Sub-Category
+  product_name: Product Name
+  sales: Sales
+  quantity: Quantity
+  discount: Discount
+  profit: Profit
+  unit_cost: Unit Cost
+  shipping_cost: Shipping Cost
+  returned: Returned
+cleaning:
+  remove_duplicates: true
+  exclude_returned_orders: true
+  discount_range:
+  - 0
+  - 1
+  quantity_min: 0.1
+  validate_ship_date_after_order_date: true
+finance:
+  unit_cost_pct_of_sales: 0.4
+  shipping_cost_pct_of_sales: 0.1
+  payment_fee_pct: 0.03
+  return_cost_per_order: 0.0
+  discount_is_percentage_0_to_100: false
+features:
+  discount_bands:
+  - 0.0
+  - 0.01
+  - 0.11
+  - 0.21
+  - 0.31
+  - 0.41
+  - 1.0
+  discount_band_labels:
+  - 0%
+  - 1-10%
+  - 11-20%
+  - 21-30%
+  - 31-40%
+  - 41%+
+analysis:
+  discount_loss_threshold: 0.3
+  shipping_loss_threshold: 0.15
+  breakeven_fit_method: polyfit
+reporting:
+  cleaned_data_file: cleaned_orders.csv
+  loss_orders_file: loss_orders.csv
+  pivot_workbook_file: analysis_pivots.xlsx
+  dashboard_png_file: dashboard.png
+  dashboard_pdf_file: dashboard.pdf
+  summary_report_file: summary_report.md
+  top_n_products: 10
+  bottom_n_products: 10
+logging:
+  level: INFO
+  log_file: profitleak.log
