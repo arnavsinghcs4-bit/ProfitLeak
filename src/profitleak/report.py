@@ -18,9 +18,14 @@ def export_cleaned_csv(df: pd.DataFrame, output_path: str) -> None:
 
 
 def export_loss_orders(df: pd.DataFrame, output_path: str) -> None:
-    """Export loss-making orders to CSV."""
+    """Export loss-making orders to CSV with CSV injection protection."""
     loss_df = df[df['is_loss']].copy()
     loss_df = loss_df.sort_values('net_profit')
+    # CSV injection protection: prefix string fields starting with formula chars
+    for col in loss_df.select_dtypes(include=['object']).columns:
+        loss_df[col] = loss_df[col].apply(
+            lambda x: f"\t{x}" if pd.notna(x) and isinstance(x, str) and x.startswith(('=', '+', '-', '@')) else x
+        )
     loss_df.to_csv(output_path, index=False)
     logger.info(f"Exported {len(loss_df)} loss orders to {output_path}")
 

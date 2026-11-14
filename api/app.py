@@ -9,6 +9,7 @@ Run (from repo root):
     uvicorn api.app:app --reload --port 8000
 """
 
+import asyncio
 import shutil
 import tempfile
 from pathlib import Path
@@ -17,7 +18,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+import io
 
 from .models import (
     BreakdownResponse,
@@ -78,6 +80,10 @@ app.add_middleware(
 )
 
 store = AnalysisStore()
+
+# Rate limiting: max 2 concurrent analyses, 1 per session per minute
+_analysis_semaphore = asyncio.Semaphore(2)
+_session_analysis_locks: Dict[str, asyncio.Lock] = {}
 
 SAMPLE_CSV = REPO_ROOT / "data" / "raw" / "sample_orders.csv"
 
@@ -174,6 +180,22 @@ def load_sample() -> Dict[str, Any]:
 # Upload / preview / validation
 # ---------------------------------------------------------------------------
 
+def _validate_file_content(file_path: Path, expected_suffix: str) -> None:
+    """Validate file content matches expected type using python-magic."""
+    try:
+        import magic
+        mime = magic.from_file(str(file_path), mime=True)
+        allowed = {
+            ".csv": ["text/csv", "text/plain", "application/csv"],
+            ".xlsx": ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+            ".xls": ["application/vnd.ms-excel"],
+        }
+        if mime not in allowed.get(expected_suffix, []):
+            raise HTTPException(status_code=400, detail=f"File content does not match {expected_suffix} format (detected: {mime}).")
+    except ImportError:
+        pass  # python-magic not available, skip content validation
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)) -> PreviewResponse:
     """Upload a CSV/XLSX file and return a preview with a suggested column mapping."""
@@ -190,6 +212,7 @@ async def upload(file: UploadFile = File(...)) -> PreviewResponse:
         size = tmp_path.stat().st_size
         if size > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail=f"File is {size / 1024 / 1024:.1f} MB; the limit is {MAX_FILE_SIZE / 1024 / 1024:.0f} MB.")
+        _validate_file_content(tmp_path, suffix)
         try:
             if suffix == ".csv":
                 df = pd.read_csv(tmp_path, nrows=MAX_ROWS)
@@ -335,6 +358,7 @@ async def create_dataset(
         tmp_path = Path(tmp.name)
 
     try:
+        _validate_file_content(tmp_path, suffix)
         try:
             if suffix == ".csv":
                 df = pd.read_csv(tmp_path, nrows=MAX_ROWS)
@@ -406,14 +430,21 @@ async def create_dataset(
 # ---------------------------------------------------------------------------
 
 @app.post("/api/datasets/{session_id}/analyze")
-def run_analysis(session_id: str, body: RunAnalysisRequest) -> Dict[str, Any]:
+async def run_analysis(session_id: str, body: RunAnalysisRequest) -> Dict[str, Any]:
     _session_or_404(session_id)
-    try:
-        meta = store.run_analysis(session_id, generate_reports=body.generate_reports)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {type(e).__name__}. Check that required numeric columns (sales) exist and contain valid values.")
+    # Per-session rate limit: 1 analysis per minute
+    lock = _session_analysis_locks.setdefault(session_id, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=429, detail="Analysis already in progress for this session. Wait for it to complete.")
+    # Global concurrency limit
+    async with _analysis_semaphore:
+        async with lock:
+            try:
+                meta = store.run_analysis(session_id, generate_reports=body.generate_reports)
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Analysis failed: {type(e).__name__}. Check that required numeric columns (sales) exist and contain valid values.")
     return {"meta": meta}
 
 
@@ -561,23 +592,33 @@ def export_loss_orders_csv(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ):
-    """CSV export of the currently filtered loss-making orders."""
+    """CSV export of the currently filtered loss-making orders (max 50k rows)."""
     _result_or_404(session_id)
+    MAX_EXPORT_ROWS = 50000
     r = loss_orders_query(
         store, session_id, search=search, category=category, sub_category=sub_category,
         region=region, segment=segment, loss_cause=loss_cause,
         discount_min=discount_min, discount_max=discount_max,
         date_from=date_from, date_to=date_to,
-        sort_by="net_profit", sort_dir="asc", page=1, page_size=500,
+        sort_by="net_profit", sort_dir="asc", page=1, page_size=MAX_EXPORT_ROWS,
     )
     if not r["rows"]:
         raise HTTPException(status_code=404, detail="No loss-making orders match the current filters.")
 
     rows = [row.model_dump() for row in r["rows"]]
-    out = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-    pd.DataFrame(rows).to_csv(out.name, index=False)
-    out.close()
-    return FileResponse(out.name, filename="profitleak_loss_orders.csv", media_type="text/csv")
+    df = pd.DataFrame(rows)
+    # CSV injection protection: prefix all string fields with a tab
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].apply(lambda x: f"\t{x}" if pd.notna(x) and isinstance(x, str) and x.startswith(('=', '+', '-', '@')) else x)
+
+    stream = io.StringIO()
+    df.to_csv(stream, index=False)
+    stream.seek(0)
+    return StreamingResponse(
+        iter([stream.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="profitleak_loss_orders.csv"'}
+    )
 
 
 # ---------------------------------------------------------------------------
